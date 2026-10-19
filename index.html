@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Manga Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
     .series { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
@@ -15,7 +16,14 @@
 </head>
 <body>
   <h1>My manga collection</h1>
-
+<div id="auth">
+  <form id="login-form">
+    <input id="email" type="email" placeholder="Your email" required>
+    <button>Send login link</button>
+  </form>
+  <p id="auth-status"></p>
+  <button id="logout" hidden>Log out</button>
+</div>
   <div class="modes">
     <button id="mode-inventory">1. Inventory</button>
     <button id="mode-reading">2. Reading</button>
@@ -204,6 +212,38 @@ document.getElementById("import-file").onchange = e => {
 };
 document.getElementById("search").oninput = render;
 document.getElementById("mode-missing").onclick = () => { mode = "missing"; render(); };
+const SUPABASE_URL = "https://cjhnonzpofziwoyinihp.supabase.co";
+const SUPABASE_KEY = "sb_publishable_8j6RjWcZ2Tig1q_mIYb5Yg_WbF_GIXA";
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let user = null;
+
+function showAuth() {
+  document.getElementById("login-form").hidden = !!user;
+  document.getElementById("logout").hidden = !user;
+  document.getElementById("auth-status").textContent = user
+    ? `Logged in as ${user.email}`
+    : "Not logged in (your data stays on this device only)";
+}
+
+document.getElementById("login-form").onsubmit = async e => {
+  e.preventDefault();
+  const email = document.getElementById("email").value.trim();
+  const { error } = await db.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: location.origin + location.pathname }
+  });
+  document.getElementById("auth-status").textContent = error
+    ? `Error: ${error.message}`
+    : "Check your email and click the link.";
+};
+
+document.getElementById("logout").onclick = async () => { await db.auth.signOut(); };
+
+db.auth.onAuthStateChange((event, session) => {
+  user = session ? session.user : null;
+  showAuth();
+});
     render();
   </script>
 </body>
