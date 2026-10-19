@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manga Tracker</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    .series { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    .volumes label { display: inline-block; margin: 0.25rem 0.5rem 0.25rem 0; }
+    .modes button { padding: 0.4rem 0.8rem; margin-right: 0.5rem; }
+    .modes button.active { font-weight: bold; background: #222; color: #fff; }
+    .tools { margin: 0.5rem 0; }
+  </style>
+</head>
+<body>
+  <h1>My collection</h1>
+
+  <div class="modes">
+    <button id="mode-inventory">1. Inventory</button>
+    <button id="mode-reading">2. Reading</button>
+    <button id="mode-missing">3. Missing</button>
+  </div>
+
+  <p id="total"></p>
+
+  <form id="add-form">
+    <input id="title" placeholder="Series title" required>
+    <input id="count" type="number" min="1" placeholder="Total volumes" required>
+    <button>Add series</button>
+  </form>
+
+  <p><label><input type="checkbox" id="filter"> Reading mode: only series with unread volumes</label></p>
+<p>
+  <button id="export">Export backup</button>
+  <button id="import">Import backup</button>
+  <input type="file" id="import-file" accept=".json" hidden>
+</p>
+<p><input id="search" placeholder="Search a series..."></p>
+  <div id="list"></div>
+
+  <script>
+    let data = JSON.parse(localStorage.getItem("manga") || "[]");
+    let mode = "inventory";
+
+    // Older entries had no "owned" list: treat all their volumes as owned
+    data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
+
+    function save() {
+      localStorage.setItem("manga", JSON.stringify(data));
+      render();
+    }
+function ranges(nums) {
+  const out = [];
+  let start = null, prev = null;
+  nums.forEach(n => {
+    if (start === null) { start = prev = n; }
+    else if (n === prev + 1) { prev = n; }
+    else {
+      out.push(start === prev ? `${start}` : `${start}-${prev}`);
+      start = prev = n;
+    }
+  });
+  if (start !== null) out.push(start === prev ? `${start}` : `${start}-${prev}`);
+  return out.join(", ");
+}
+
+function renderMissing() {
+  const list = document.getElementById("list");
+  const query = document.getElementById("search").value.trim().toLowerCase();
+  list.innerHTML = "";
+  let missingTotal = 0;
+
+  [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
+    const missing = [];
+    s.owned.forEach((o, v) => { if (!o) missing.push(v + 1); });
+    missingTotal += missing.length;
+    if (!missing.length) return;
+    if (query && !s.title.toLowerCase().includes(query)) return;
+
+    const div = document.createElement("div");
+    div.className = "series";
+    div.innerHTML = `<h3>${s.title} <small>(${missing.length} missing)</small></h3><p>Volumes: ${ranges(missing)}</p>`;
+    list.appendChild(div);
+  });
+
+  document.getElementById("total").textContent = `${missingTotal} volumes missing to complete your series`;
+}
+    function render() {
+      const list = document.getElementById("list");
+      const onlyUnread = document.getElementById("filter").checked;
+      const query = document.getElementById("search").value.trim().toLowerCase();
+      const field = mode === "inventory" ? "owned" : "read";
+      list.innerHTML = "";
+      let ownedTotal = 0, unreadTotal = 0;
+
+      document.getElementById("mode-inventory").className = mode === "inventory" ? "active" : "";
+      document.getElementById("mode-reading").className = mode === "reading" ? "active" : "";
+      document.getElementById("mode-missing").className = mode === "missing" ? "active" : "";
+if (mode === "missing") { renderMissing(); return; }
+
+      [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
+        const ownedCount = s.owned.filter(Boolean).length;
+        const left = s.owned.filter((o, v) => o && !s.read[v]).length;
+        ownedTotal += ownedCount;
+        unreadTotal += left;
+        if (mode === "reading" && onlyUnread && left === 0) return;
+if (query && !s.title.toLowerCase().includes(query)) return;
+        const info = mode === "inventory"
+          ? `${ownedCount}/${s.owned.length} owned`
+          : `${left} unread`;
+
+        const div = document.createElement("div");
+        div.className = "series";
+        div.innerHTML = `
+          <h3>${s.title} <small>(${info})</small> <button class="del">Delete</button></h3>
+          <div class="tools"><button class="upto"></button> <button class="clear"></button> <button class="add">Add volumes…</button></div>
+          <div class="volumes"></div>`;
+
+        div.querySelector(".del").onclick = () => {
+          if (confirm(`Delete ${s.title}?`)) { data.splice(data.indexOf(s), 1);; save(); }
+        };
+
+        const upto = div.querySelector(".upto");
+        upto.textContent = `Mark ${field} up to volume…`;
+        upto.onclick = () => {
+          const n = parseInt(prompt(`Mark as ${field} up to volume number:`));
+          if (!n) return;
+          for (let v = 0; v < Math.min(n, s[field].length); v++) s[field][v] = true;
+          save();
+        };
+const clear = div.querySelector(".clear");
+clear.textContent = `Clear all ${field}`;
+clear.onclick = () => {
+  if (confirm(`Clear all "${field}" marks for ${s.title}?`)) {
+    s[field] = s[field].map(() => false);
+    save();
+  }
+};
+div.querySelector(".add").onclick = () => {
+  const n = parseInt(prompt(`How many volumes to add to ${s.title}?`, "1"));
+  if (!n || n < 1) return;
+  for (let k = 0; k < n; k++) { s.owned.push(false); s.read.push(false); }
+  save();
+};
+        s[field].forEach((val, v) => {
+          if (mode === "reading" && !s.owned[v]) return; // only show owned volumes
+          const label = document.createElement("label");
+          label.innerHTML = `<input type="checkbox" ${val ? "checked" : ""}> ${v + 1}`;
+          label.querySelector("input").onchange = e => { s[field][v] = e.target.checked; save(); };
+          div.querySelector(".volumes").appendChild(label);
+        });
+
+        list.appendChild(div);
+      });
+
+      document.getElementById("total").textContent = mode === "inventory"
+        ? `${ownedTotal} volumes owned`
+        : `${unreadTotal} owned volumes left to read`;
+    }
+
+    document.getElementById("add-form").onsubmit = e => {
+      e.preventDefault();
+      const title = document.getElementById("title").value.trim();
+      const count = parseInt(document.getElementById("count").value);
+      data.push({ title, owned: Array(count).fill(false), read: Array(count).fill(false) });
+      e.target.reset();
+      save();
+    };
+
+    document.getElementById("filter").onchange = render;
+    document.getElementById("mode-inventory").onclick = () => { mode = "inventory"; render(); };
+    document.getElementById("mode-reading").onclick = () => { mode = "reading"; render(); };
+document.getElementById("export").onclick = () => {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "manga-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+document.getElementById("import").onclick = () => document.getElementById("import-file").click();
+
+document.getElementById("import-file").onchange = e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const imported = JSON.parse(reader.result);
+      if (!Array.isArray(imported)) throw new Error("bad format");
+      if (confirm("This will replace your current collection. Continue?")) {
+        data = imported;
+        data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
+        save();
+      }
+    } catch {
+      alert("This file is not a valid backup.");
+    }
+    e.target.value = "";
+  };
+  reader.readAsText(file);
+};
+document.getElementById("search").oninput = render;
+document.getElementById("mode-missing").onclick = () => { mode = "missing"; render(); };
+    render();
+  </script>
+</body>
+</html>
