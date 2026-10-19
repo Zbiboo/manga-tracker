@@ -3,112 +3,276 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#EEF0F6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0E0F1F" media="(prefers-color-scheme: dark)">
   <title>Manga Tracker</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700;900&display=swap" rel="stylesheet">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
-    .series { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-    .volumes label { display: inline-block; margin: 0.25rem 0.5rem 0.25rem 0; }
-    .modes button { padding: 0.4rem 0.8rem; margin-right: 0.5rem; }
-    .modes button.active { font-weight: bold; background: #222; color: #fff; }
-    .tools { margin: 0.5rem 0; }
+    :root {
+      --paper: #EEF0F6;
+      --surface: #FFFFFF;
+      --ink: #14162B;
+      --muted: #62668A;
+      --line: #D5D9EA;
+      --own-bg: #14162B;
+      --own-fg: #F4F5FB;
+      --read-bg: #3347FF;
+      --read-fg: #FFFFFF;
+      --danger: #C42B3A;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #0E0F1F;
+        --surface: #171933;
+        --ink: #ECEEFA;
+        --muted: #9A9FC4;
+        --line: #2C2F52;
+        --own-bg: #ECEEFA;
+        --own-fg: #0E0F1F;
+        --read-bg: #8B96FF;
+        --read-fg: #0B0C1A;
+        --danger: #FF7B88;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Zen Kaku Gothic New", system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      padding-bottom: calc(110px + env(safe-area-inset-bottom));
+    }
+    main { max-width: 640px; margin: 0 auto; padding: 28px 16px 0; }
+
+    h1 { font-size: 2rem; font-weight: 900; letter-spacing: -0.02em; line-height: 1.1; margin: 0 0 8px; }
+    #total { margin: 0; font-size: 1.125rem; font-weight: 700; }
+    .muted { color: var(--muted); font-size: 0.875rem; margin: 4px 0 0; }
+
+    :focus-visible { outline: 3px solid var(--read-bg); outline-offset: 2px; }
+
+    /* Buttons and inputs */
+    .btn {
+      height: 44px; padding: 0 18px;
+      border-radius: 12px; border: 1px solid var(--line);
+      background: var(--surface); color: var(--ink);
+      font: inherit; font-weight: 700; cursor: pointer;
+    }
+    .btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+    .btn.danger { color: var(--danger); }
+
+    input:not([type="checkbox"]):not([type="file"]) {
+      height: 44px; padding: 0 14px;
+      border: 1px solid var(--line); border-radius: 12px;
+      background: var(--paper); color: var(--ink);
+      font: inherit; flex: 1 1 140px; min-width: 0;
+    }
+
+    /* Account and tools panel */
+    .panel { margin: 20px 0 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+    .panel summary { cursor: pointer; padding: 14px 16px; font-weight: 700; list-style: none; }
+    .panel summary::-webkit-details-marker { display: none; }
+    .panel summary::after { content: "+"; float: right; font-weight: 400; }
+    .panel[open] summary::after { content: "\2013"; }
+    .panel[open] summary { border-bottom: 1px solid var(--line); }
+    .panel-body { padding: 16px; display: grid; gap: 18px; }
+    #login-form, #add-form, .row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    /* Search and filter */
+    .controls { display: grid; gap: 6px; margin: 0 0 8px; }
+    .controls input[type="search"] { width: 100%; flex: none; }
+    .filter-row { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+    .filter-row input { width: 20px; height: 20px; accent-color: var(--read-bg); }
+    body:not([data-mode="reading"]) .filter-row { display: none; }
+
+    /* Series shelves */
+    .series { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin: 14px 0; }
+    .series-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .series-title { margin: 0; font-size: 1.25rem; font-weight: 900; letter-spacing: -0.01em; }
+    .series-count { color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
+    .ranges { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+
+    /* Volume tiles: one per spine on the shelf */
+    .volumes { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tile {
+      position: relative; width: 40px; height: 56px;
+      display: flex; align-items: center; justify-content: center;
+      border: 1.5px solid var(--line); border-radius: 6px;
+      font-weight: 700; font-size: 0.9rem; font-variant-numeric: tabular-nums;
+      cursor: pointer; user-select: none;
+      transition: background-color 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .tile::before {
+      content: ""; position: absolute; top: 6px; left: 50%;
+      width: 14px; height: 2px; margin-left: -7px;
+      background: currentColor; opacity: 0.3; border-radius: 2px;
+    }
+    .tile input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+    .tile:focus-within { outline: 3px solid var(--read-bg); outline-offset: 2px; }
+
+    body[data-mode="inventory"] .tile:not(.on) { border-style: dashed; }
+    body[data-mode="inventory"] .tile.on { background: var(--own-bg); color: var(--own-fg); border-color: var(--own-bg); }
+    body[data-mode="reading"] .tile:not(.on) { border-color: var(--ink); }
+    body[data-mode="reading"] .tile.on { background: var(--read-bg); color: var(--read-fg); border-color: var(--read-bg); }
+
+    /* Per-series options */
+    .more { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 4px; }
+    .more summary { cursor: pointer; padding: 10px 0; color: var(--muted); font-size: 0.9rem; list-style: none; }
+    .more summary::-webkit-details-marker { display: none; }
+    .more summary::after { content: "+"; float: right; }
+    .more[open] summary::after { content: "\2013"; }
+    .tools { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 6px; }
+    .tools .btn { height: 40px; font-size: 0.9rem; }
+
+    .empty { color: var(--muted); text-align: center; padding: 40px 16px; margin: 0; }
+
+    /* Bottom navigation, within thumb reach */
+    .modes {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      bottom: calc(16px + env(safe-area-inset-bottom));
+      display: flex; gap: 4px; padding: 6px;
+      background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+      box-shadow: 0 8px 24px rgba(20, 22, 43, 0.18);
+    }
+    .modes button {
+      height: 44px; padding: 0 20px; border: 0; border-radius: 999px;
+      background: transparent; color: var(--muted);
+      font: inherit; font-weight: 700; cursor: pointer;
+    }
+    .modes button.active { background: var(--ink); color: var(--paper); }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
   </style>
 </head>
-<body>
-  <h1>My manga collection</h1>
-<div id="auth">
-  <form id="login-form">
-    <input id="email" type="email" placeholder="Your email" required>
-    <button>Send login link</button>
-  </form>
-  <p id="auth-status"></p>
-  <p id="sync-status"></p>
-  <button id="logout" hidden>Log out</button>
-</div>
-  <div class="modes">
-    <button id="mode-inventory">1. Inventory</button>
-    <button id="mode-reading">2. Reading</button>
-    <button id="mode-missing">3. Missing</button>
-  </div>
+<body data-mode="inventory">
+  <main>
+    <header>
+      <h1>My manga collection</h1>
+      <p id="total"></p>
+      <p id="sync-status" class="muted"></p>
+    </header>
 
-  <p id="total"></p>
+    <details class="panel">
+      <summary>Account and tools</summary>
+      <div class="panel-body">
+        <div id="auth">
+          <form id="login-form">
+            <input id="email" type="email" placeholder="Your email" autocomplete="email" required>
+            <button class="btn primary">Send login link</button>
+          </form>
+          <p id="auth-status" class="muted"></p>
+          <button id="logout" class="btn" type="button" hidden>Log out</button>
+        </div>
 
-  <form id="add-form">
-    <input id="title" placeholder="Series title" required>
-    <input id="count" type="number" min="1" placeholder="Total volumes" required>
-    <button>Add series</button>
-  </form>
+        <form id="add-form">
+          <input id="title" placeholder="Series title" required>
+          <input id="count" type="number" min="1" inputmode="numeric" placeholder="Total volumes" required>
+          <button class="btn primary">Add series</button>
+        </form>
 
-  <p><label><input type="checkbox" id="filter"> Reading mode: only series with unread volumes</label></p>
-<p>
-  <button id="export">Export backup</button>
-  <button id="import">Import backup</button>
-  <input type="file" id="import-file" accept=".json" hidden>
-</p>
-<p><input id="search" placeholder="Search a series..."></p>
-  <div id="list"></div>
+        <div class="row">
+          <button id="export" class="btn" type="button">Export backup</button>
+          <button id="import" class="btn" type="button">Import backup</button>
+          <input type="file" id="import-file" accept=".json" hidden>
+        </div>
+      </div>
+    </details>
+
+    <div class="controls">
+      <input id="search" type="search" placeholder="Search a series">
+      <label class="filter-row"><input type="checkbox" id="filter"> Only series with unread volumes</label>
+    </div>
+
+    <div id="list"></div>
+  </main>
+
+  <nav class="modes" aria-label="View">
+    <button type="button" data-mode="inventory">Inventory</button>
+    <button type="button" data-mode="reading">Reading</button>
+    <button type="button" data-mode="missing">Missing</button>
+  </nav>
 
   <script>
+    const SUPABASE_URL = "https://cjhnonzpofziwoyinihp.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_8j6RjWcZ2Tig1q_mIYb5Yg_WbF_GIXA";
+    const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
     let data = JSON.parse(localStorage.getItem("manga") || "[]");
     let mode = "inventory";
+    let user = null;
+    let pushTimer = null;
 
     // Older entries had no "owned" list: treat all their volumes as owned
     data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
 
-    function save() {
-  localStorage.setItem("manga", JSON.stringify(data));
-  localStorage.setItem("manga_updated", new Date().toISOString());
-  render();
-  pushSoon();
-}
-function ranges(nums) {
-  const out = [];
-  let start = null, prev = null;
-  nums.forEach(n => {
-    if (start === null) { start = prev = n; }
-    else if (n === prev + 1) { prev = n; }
-    else {
-      out.push(start === prev ? `${start}` : `${start}-${prev}`);
-      start = prev = n;
+    /* ---------- Small helpers ---------- */
+
+    function el(tag, className, text) {
+      const e = document.createElement(tag);
+      if (className) e.className = className;
+      if (text !== undefined) e.textContent = text;
+      return e;
     }
-  });
-  if (start !== null) out.push(start === prev ? `${start}` : `${start}-${prev}`);
-  return out.join(", ");
-}
 
-function renderMissing() {
-  const list = document.getElementById("list");
-  const query = document.getElementById("search").value.trim().toLowerCase();
-  list.innerHTML = "";
-  let missingTotal = 0;
+    function btn(label, onClick, extra) {
+      const b = el("button", "btn" + (extra ? " " + extra : ""), label);
+      b.type = "button";
+      b.onclick = onClick;
+      return b;
+    }
 
-  [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
-    const missing = [];
-    s.owned.forEach((o, v) => { if (!o) missing.push(v + 1); });
-    missingTotal += missing.length;
-    if (!missing.length) return;
-    if (query && !s.title.toLowerCase().includes(query)) return;
+    function ranges(nums) {
+      const out = [];
+      let start = null, prev = null;
+      nums.forEach(n => {
+        if (start === null) { start = prev = n; }
+        else if (n === prev + 1) { prev = n; }
+        else {
+          out.push(start === prev ? `${start}` : `${start}-${prev}`);
+          start = prev = n;
+        }
+      });
+      if (start !== null) out.push(start === prev ? `${start}` : `${start}-${prev}`);
+      return out.join(", ");
+    }
 
-    const div = document.createElement("div");
-    div.className = "series";
-    div.innerHTML = `<h3>${s.title} <small>(${missing.length} missing)</small></h3><p>Volumes: ${ranges(missing)}</p>`;
-    list.appendChild(div);
-  });
+    const EMPTY_TEXT = "No series yet. Open Account and tools, under the title, to add your first one.";
 
-  document.getElementById("total").textContent = `${missingTotal} volumes missing to complete your series`;
-}
+    /* ---------- Saving ---------- */
+
+    function save() {
+      localStorage.setItem("manga", JSON.stringify(data));
+      localStorage.setItem("manga_updated", new Date().toISOString());
+      render();
+      pushSoon();
+    }
+
+    /* ---------- Rendering ---------- */
+
     function render() {
+      document.body.dataset.mode = mode;
+      document.querySelectorAll(".modes button").forEach(b => {
+        b.classList.toggle("active", b.dataset.mode === mode);
+      });
+
+      if (mode === "missing") { renderMissing(); return; }
+
       const list = document.getElementById("list");
       const onlyUnread = document.getElementById("filter").checked;
       const query = document.getElementById("search").value.trim().toLowerCase();
       const field = mode === "inventory" ? "owned" : "read";
-      list.innerHTML = "";
+      list.replaceChildren();
       let ownedTotal = 0, unreadTotal = 0;
-
-      document.getElementById("mode-inventory").className = mode === "inventory" ? "active" : "";
-      document.getElementById("mode-reading").className = mode === "reading" ? "active" : "";
-      document.getElementById("mode-missing").className = mode === "missing" ? "active" : "";
-if (mode === "missing") { renderMissing(); return; }
 
       [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
         const ownedCount = s.owned.filter(Boolean).length;
@@ -116,59 +280,108 @@ if (mode === "missing") { renderMissing(); return; }
         ownedTotal += ownedCount;
         unreadTotal += left;
         if (mode === "reading" && onlyUnread && left === 0) return;
-if (query && !s.title.toLowerCase().includes(query)) return;
-        const info = mode === "inventory"
-          ? `${ownedCount}/${s.owned.length} owned`
-          : `${left} unread`;
+        if (query && !s.title.toLowerCase().includes(query)) return;
 
-        const div = document.createElement("div");
-        div.className = "series";
-        div.innerHTML = `
-          <h3>${s.title} <small>(${info})</small> <button class="del">Delete</button></h3>
-          <div class="tools"><button class="upto"></button> <button class="clear"></button> <button class="add">Add volumes…</button></div>
-          <div class="volumes"></div>`;
+        const card = el("section", "series");
 
-        div.querySelector(".del").onclick = () => {
-          if (confirm(`Delete ${s.title}?`)) { data.splice(data.indexOf(s), 1);; save(); }
-        };
+        const head = el("div", "series-head");
+        head.append(
+          el("h2", "series-title", s.title),
+          el("span", "series-count", mode === "inventory"
+            ? `${ownedCount} of ${s.owned.length} owned`
+            : `${left} unread`)
+        );
+        card.append(head);
 
-        const upto = div.querySelector(".upto");
-        upto.textContent = `Mark ${field} up to volume…`;
-        upto.onclick = () => {
-          const n = parseInt(prompt(`Mark as ${field} up to volume number:`));
-          if (!n) return;
-          for (let v = 0; v < Math.min(n, s[field].length); v++) s[field][v] = true;
-          save();
-        };
-const clear = div.querySelector(".clear");
-clear.textContent = `Clear all ${field}`;
-clear.onclick = () => {
-  if (confirm(`Clear all "${field}" marks for ${s.title}?`)) {
-    s[field] = s[field].map(() => false);
-    save();
-  }
-};
-div.querySelector(".add").onclick = () => {
-  const n = parseInt(prompt(`How many volumes to add to ${s.title}?`, "1"));
-  if (!n || n < 1) return;
-  for (let k = 0; k < n; k++) { s.owned.push(false); s.read.push(false); }
-  save();
-};
+        const grid = el("div", "volumes");
         s[field].forEach((val, v) => {
-          if (mode === "reading" && !s.owned[v]) return; // only show owned volumes
-          const label = document.createElement("label");
-          label.innerHTML = `<input type="checkbox" ${val ? "checked" : ""}> ${v + 1}`;
-          label.querySelector("input").onchange = e => { s[field][v] = e.target.checked; save(); };
-          div.querySelector(".volumes").appendChild(label);
+          if (mode === "reading" && !s.owned[v]) return; // only owned volumes can be read
+          const tile = el("label", "tile" + (val ? " on" : ""));
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.checked = val;
+          box.setAttribute("aria-label", `${s.title}, volume ${v + 1}`);
+          box.onchange = () => { s[field][v] = box.checked; save(); };
+          tile.append(box, el("span", "", String(v + 1)));
+          grid.append(tile);
         });
+        card.append(grid);
 
-        list.appendChild(div);
+        const more = el("details", "more");
+        more.append(el("summary", "", "Options"));
+        const tools = el("div", "tools");
+        tools.append(
+          btn(`Mark ${field} up to…`, () => {
+            const n = parseInt(prompt(`Mark as ${field} up to volume number:`));
+            if (!n) return;
+            for (let v = 0; v < Math.min(n, s[field].length); v++) s[field][v] = true;
+            save();
+          }),
+          btn(`Clear all ${field}`, () => {
+            if (confirm(`Clear all "${field}" marks for ${s.title}?`)) {
+              s[field] = s[field].map(() => false);
+              save();
+            }
+          }),
+          btn("Add volumes…", () => {
+            const n = parseInt(prompt(`How many volumes to add to ${s.title}?`, "1"));
+            if (!n || n < 1) return;
+            for (let k = 0; k < n; k++) { s.owned.push(false); s.read.push(false); }
+            save();
+          }),
+          btn("Delete series", () => {
+            if (confirm(`Delete ${s.title}?`)) { data.splice(data.indexOf(s), 1); save(); }
+          }, "danger")
+        );
+        more.append(tools);
+        card.append(more);
+
+        list.append(card);
       });
 
       document.getElementById("total").textContent = mode === "inventory"
-        ? `${ownedTotal} volumes owned`
+        ? `${ownedTotal} volumes on your shelf`
         : `${unreadTotal} owned volumes left to read`;
+
+      if (!list.children.length) {
+        list.append(el("p", "empty", data.length ? "No series match your search or filter." : EMPTY_TEXT));
+      }
     }
+
+    function renderMissing() {
+      const list = document.getElementById("list");
+      const query = document.getElementById("search").value.trim().toLowerCase();
+      list.replaceChildren();
+      let missingTotal = 0;
+
+      [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
+        const missing = [];
+        s.owned.forEach((o, v) => { if (!o) missing.push(v + 1); });
+        missingTotal += missing.length;
+        if (!missing.length) return;
+        if (query && !s.title.toLowerCase().includes(query)) return;
+
+        const card = el("section", "series");
+        const head = el("div", "series-head");
+        head.append(
+          el("h2", "series-title", s.title),
+          el("span", "series-count", `${missing.length} missing`)
+        );
+        card.append(head, el("p", "ranges", `Volumes ${ranges(missing)}`));
+        list.append(card);
+      });
+
+      document.getElementById("total").textContent = `${missingTotal} volumes missing from your series`;
+
+      if (!list.children.length) {
+        list.append(el("p", "empty", !data.length
+          ? EMPTY_TEXT
+          : missingTotal ? "No series match your search."
+          : "Nothing missing. Every volume you listed is on your shelf."));
+      }
+    }
+
+    /* ---------- Add series, backup, search, modes ---------- */
 
     document.getElementById("add-form").onsubmit = e => {
       e.preventDefault();
@@ -179,134 +392,134 @@ div.querySelector(".add").onclick = () => {
       save();
     };
 
+    document.getElementById("export").onclick = () => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "manga-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+
+    document.getElementById("import").onclick = () => document.getElementById("import-file").click();
+
+    document.getElementById("import-file").onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const imported = JSON.parse(reader.result);
+          if (!Array.isArray(imported)) throw new Error("bad format");
+          if (confirm("This will replace your current collection. Continue?")) {
+            data = imported;
+            data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
+            save();
+          }
+        } catch {
+          alert("This file is not a valid backup.");
+        }
+        e.target.value = "";
+      };
+      reader.readAsText(file);
+    };
+
+    document.getElementById("search").oninput = render;
     document.getElementById("filter").onchange = render;
-    document.getElementById("mode-inventory").onclick = () => { mode = "inventory"; render(); };
-    document.getElementById("mode-reading").onclick = () => { mode = "reading"; render(); };
-document.getElementById("export").onclick = () => {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "manga-backup-" + new Date().toISOString().slice(0, 10) + ".json";
-  a.click();
-  URL.revokeObjectURL(a.href);
-};
+    document.querySelectorAll(".modes button").forEach(b => {
+      b.onclick = () => { mode = b.dataset.mode; render(); };
+    });
 
-document.getElementById("import").onclick = () => document.getElementById("import-file").click();
+    /* ---------- Login ---------- */
 
-document.getElementById("import-file").onchange = e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const imported = JSON.parse(reader.result);
-      if (!Array.isArray(imported)) throw new Error("bad format");
-      if (confirm("This will replace your current collection. Continue?")) {
-        data = imported;
-        data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
-        save();
-      }
-    } catch {
-      alert("This file is not a valid backup.");
+    function showAuth() {
+      document.getElementById("login-form").hidden = !!user;
+      document.getElementById("logout").hidden = !user;
+      document.getElementById("auth-status").textContent = user
+        ? `Logged in as ${user.email}`
+        : "Not logged in. Your data stays on this device only.";
     }
-    e.target.value = "";
-  };
-  reader.readAsText(file);
-};
-document.getElementById("search").oninput = render;
-document.getElementById("mode-missing").onclick = () => { mode = "missing"; render(); };
-const SUPABASE_URL = "https://cjhnonzpofziwoyinihp.supabase.co";
-const SUPABASE_KEY = "sb_publishable_8j6RjWcZ2Tig1q_mIYb5Yg_WbF_GIXA";
-const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-let user = null;
+    document.getElementById("login-form").onsubmit = async e => {
+      e.preventDefault();
+      const email = document.getElementById("email").value.trim();
+      const { error } = await db.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: location.origin + location.pathname }
+      });
+      document.getElementById("auth-status").textContent = error
+        ? `Error: ${error.message}`
+        : "Check your email and click the link.";
+    };
 
-function showAuth() {
-  document.getElementById("login-form").hidden = !!user;
-  document.getElementById("logout").hidden = !user;
-  document.getElementById("auth-status").textContent = user
-    ? `Logged in as ${user.email}`
-    : "Not logged in (your data stays on this device only)";
-}
+    document.getElementById("logout").onclick = async () => { await db.auth.signOut(); };
 
-document.getElementById("login-form").onsubmit = async e => {
-  e.preventDefault();
-  const email = document.getElementById("email").value.trim();
-  const { error } = await db.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: location.origin + location.pathname }
-  });
-  document.getElementById("auth-status").textContent = error
-    ? `Error: ${error.message}`
-    : "Check your email and click the link.";
-};
+    /* ---------- Cloud sync ---------- */
 
-document.getElementById("logout").onclick = async () => { await db.auth.signOut(); };
+    function setSyncStatus(msg) {
+      document.getElementById("sync-status").textContent = msg;
+    }
 
-let pushTimer = null;
+    function pushSoon() {
+      if (!user) return;
+      clearTimeout(pushTimer);
+      setSyncStatus("Saving…");
+      pushTimer = setTimeout(push, 800);
+    }
 
-function setSyncStatus(msg) {
-  document.getElementById("sync-status").textContent = msg;
-}
+    async function push() {
+      let stamp = localStorage.getItem("manga_updated");
+      if (!stamp) {
+        stamp = new Date().toISOString();
+        localStorage.setItem("manga_updated", stamp);
+      }
+      const { error } = await db.from("collections").upsert({
+        user_id: user.id,
+        data,
+        updated_at: stamp
+      });
+      setSyncStatus(error ? `Sync error: ${error.message}` : "Synced ✓");
+    }
 
-function pushSoon() {
-  if (!user) return;
-  clearTimeout(pushTimer);
-  setSyncStatus("Saving…");
-  pushTimer = setTimeout(push, 800);
-}
+    async function pull() {
+      setSyncStatus("Syncing…");
+      const { data: row, error } = await db
+        .from("collections")
+        .select("data, updated_at")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (error) { setSyncStatus(`Sync error: ${error.message}`); return; }
 
-async function push() {
-  let stamp = localStorage.getItem("manga_updated");
-  if (!stamp) {
-    stamp = new Date().toISOString();
-    localStorage.setItem("manga_updated", stamp);
-  }
-  const { error } = await db.from("collections").upsert({
-    user_id: user.id,
-    data,
-    updated_at: stamp
-  });
-  setSyncStatus(error ? `Sync error: ${error.message}` : "Synced ✓");
-}
+      const localStamp = localStorage.getItem("manga_updated") || "1970-01-01T00:00:00.000Z";
 
-async function pull() {
-  setSyncStatus("Syncing…");
-  const { data: row, error } = await db
-    .from("collections")
-    .select("data, updated_at")
-    .eq("user_id", user.id)
-    .maybeSingle();
-  if (error) { setSyncStatus(`Sync error: ${error.message}`); return; }
+      if (!row) { await push(); return; } // first time: upload this device's data
 
-  const localStamp = localStorage.getItem("manga_updated") || "1970-01-01T00:00:00.000Z";
+      const cloudTime = new Date(row.updated_at);
+      const localTime = new Date(localStamp);
 
-  if (!row) { await push(); return; } // first time: upload this device's data
+      if (data.length === 0 || cloudTime > localTime) {
+        localStorage.setItem("manga_before_sync", JSON.stringify(data)); // safety copy
+        data = row.data;
+        data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
+        localStorage.setItem("manga", JSON.stringify(data));
+        localStorage.setItem("manga_updated", row.updated_at);
+        render();
+        setSyncStatus("Synced ✓ (loaded from cloud)");
+      } else if (cloudTime < localTime) {
+        await push();
+      } else {
+        setSyncStatus("Synced ✓");
+      }
+    }
 
-  const cloudTime = new Date(row.updated_at);
-  const localTime = new Date(localStamp);
+    db.auth.onAuthStateChange((event, session) => {
+      user = session ? session.user : null;
+      showAuth();
+      if (!user) setSyncStatus("");
+      if (user && (event === "INITIAL_SESSION" || event === "SIGNED_IN")) setTimeout(pull, 0);
+    });
 
-  if (data.length === 0 || cloudTime > localTime) {
-    localStorage.setItem("manga_before_sync", JSON.stringify(data)); // safety copy
-    data = row.data;
-    data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
-    localStorage.setItem("manga", JSON.stringify(data));
-    localStorage.setItem("manga_updated", row.updated_at);
-    render();
-    setSyncStatus("Synced ✓ (loaded from cloud)");
-  } else if (cloudTime < localTime) {
-    await push();
-  } else {
-    setSyncStatus("Synced ✓");
-  }
-}
-
-db.auth.onAuthStateChange((event, session) => {
-  user = session ? session.user : null;
-  showAuth();
-  if (!user) setSyncStatus("");
-  if (user && (event === "INITIAL_SESSION" || event === "SIGNED_IN")) setTimeout(pull, 0);
-});
+    showAuth();
     render();
   </script>
 </body>
