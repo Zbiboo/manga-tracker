@@ -22,6 +22,7 @@
     <button>Send login link</button>
   </form>
   <p id="auth-status"></p>
+  <p id="sync-status"></p>
   <button id="logout" hidden>Log out</button>
 </div>
   <div class="modes">
@@ -55,9 +56,11 @@
     data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
 
     function save() {
-      localStorage.setItem("manga", JSON.stringify(data));
-      render();
-    }
+  localStorage.setItem("manga", JSON.stringify(data));
+  localStorage.setItem("manga_updated", new Date().toISOString());
+  render();
+  pushSoon();
+}
 function ranges(nums) {
   const out = [];
   let start = null, prev = null;
@@ -240,9 +243,69 @@ document.getElementById("login-form").onsubmit = async e => {
 
 document.getElementById("logout").onclick = async () => { await db.auth.signOut(); };
 
+let pushTimer = null;
+
+function setSyncStatus(msg) {
+  document.getElementById("sync-status").textContent = msg;
+}
+
+function pushSoon() {
+  if (!user) return;
+  clearTimeout(pushTimer);
+  setSyncStatus("Saving…");
+  pushTimer = setTimeout(push, 800);
+}
+
+async function push() {
+  let stamp = localStorage.getItem("manga_updated");
+  if (!stamp) {
+    stamp = new Date().toISOString();
+    localStorage.setItem("manga_updated", stamp);
+  }
+  const { error } = await db.from("collections").upsert({
+    user_id: user.id,
+    data,
+    updated_at: stamp
+  });
+  setSyncStatus(error ? `Sync error: ${error.message}` : "Synced ✓");
+}
+
+async function pull() {
+  setSyncStatus("Syncing…");
+  const { data: row, error } = await db
+    .from("collections")
+    .select("data, updated_at")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (error) { setSyncStatus(`Sync error: ${error.message}`); return; }
+
+  const localStamp = localStorage.getItem("manga_updated") || "1970-01-01T00:00:00.000Z";
+
+  if (!row) { await push(); return; } // first time: upload this device's data
+
+  const cloudTime = new Date(row.updated_at);
+  const localTime = new Date(localStamp);
+
+  if (data.length === 0 || cloudTime > localTime) {
+    localStorage.setItem("manga_before_sync", JSON.stringify(data)); // safety copy
+    data = row.data;
+    data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
+    localStorage.setItem("manga", JSON.stringify(data));
+    localStorage.setItem("manga_updated", row.updated_at);
+    render();
+    setSyncStatus("Synced ✓ (loaded from cloud)");
+  } else if (cloudTime < localTime) {
+    await push();
+  } else {
+    setSyncStatus("Synced ✓");
+  }
+}
+
 db.auth.onAuthStateChange((event, session) => {
   user = session ? session.user : null;
   showAuth();
+  if (!user) setSyncStatus("");
+  if (user && (event === "INITIAL_SESSION" || event === "SIGNED_IN")) setTimeout(pull, 0);
 });
     render();
   </script>
