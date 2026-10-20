@@ -159,6 +159,16 @@
     dialog h2 { margin: 0 0 12px; font-size: 1.25rem; font-weight: 900; }
     #scan-video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; background: #000; }
     .scan-result { font-size: 1.5rem; font-weight: 900; margin: 8px 0; min-height: 1.5em; font-variant-numeric: tabular-nums; }
+    dialog { max-height: 92vh; overflow: auto; }
+    select {
+      width: 100%; height: 44px; padding: 0 12px;
+      border: 1px solid var(--line); border-radius: 12px;
+      background: var(--paper); color: var(--ink); font: inherit;
+    }
+    .scan-confirm { display: grid; gap: 10px; margin: 8px 0 12px; }
+    .scan-confirm label { display: grid; gap: 4px; font-weight: 700; font-size: 0.9rem; }
+    .scan-confirm input { flex: none; width: 100%; }
+    #scan-saved { margin: 0 0 12px; min-height: 1.5em; }
 
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; }
@@ -219,6 +229,17 @@
     <video id="scan-video" playsinline muted></video>
     <p id="scan-status" class="muted">Point the camera at the barcode on the back cover.</p>
     <p id="scan-result" class="scan-result"></p>
+    <form id="scan-confirm" class="scan-confirm" hidden>
+      <label>Series
+        <select id="scan-series"></select>
+      </label>
+      <input id="scan-newname" placeholder="New series name" aria-label="New series name" hidden>
+      <label>Volume
+        <input id="scan-volume" type="number" min="1" max="999" inputmode="numeric">
+      </label>
+      <button class="btn primary" type="submit">Add to my shelf</button>
+    </form>
+    <p id="scan-saved" class="muted" role="status"></p>
     <div class="row">
       <button id="scan-again" class="btn" type="button" hidden>Scan another</button>
       <button id="scan-close" class="btn primary" type="button">Close</button>
@@ -557,6 +578,8 @@
     const scanVideo = document.getElementById("scan-video");
     let scanStream = null;
     let scanLoop = null;
+    let scanSeq = 0;        // bumps on every new scan or close, so late lookups can be ignored
+    let currentIsbn = null;
 
     function setScanStatus(msg) {
       document.getElementById("scan-status").textContent = msg;
@@ -572,8 +595,13 @@
     }
 
     async function startScanner() {
+      scanSeq++;
+      currentIsbn = null;
+      scanVideo.hidden = true;
       document.getElementById("scan-result").textContent = "";
       document.getElementById("scan-again").hidden = true;
+      document.getElementById("scan-confirm").hidden = true;
+      setScanStatus("Starting the camera…");
 
       if (!("BarcodeDetector" in window)) {
         setScanStatus("This browser can't read barcodes. Try Chrome on your Android phone.");
@@ -612,6 +640,7 @@
         return; // interrupted, for example because the dialog was closed
       }
       if (!scanStream) return;
+      scanVideo.hidden = false;
       setScanStatus("Point the camera at the barcode on the back cover.");
 
       const tick = async () => {
@@ -626,18 +655,203 @@
       tick();
     }
 
-    function onScanned(isbn) {
-      stopScanner();
-      if (navigator.vibrate) navigator.vibrate(80);
-      document.getElementById("scan-result").textContent = isbn;
-      setScanStatus("ISBN found.");
-      document.getElementById("scan-again").hidden = false;
-    }
-
-    document.getElementById("scan-open").onclick = () => { scanner.showModal(); startScanner(); };
+    document.getElementById("scan-open").onclick = () => {
+      document.getElementById("scan-saved").textContent = "";
+      scanner.showModal();
+      startScanner();
+    };
     document.getElementById("scan-again").onclick = startScanner;
     document.getElementById("scan-close").onclick = () => scanner.close();
-    scanner.addEventListener("close", stopScanner);
+    scanner.addEventListener("close", () => { scanSeq++; stopScanner(); });
+
+    /* ---------- Barcode scanner, step 2: find the book and confirm ---------- */
+
+    // Lowercase, no accents, words separated by single spaces
+    function normalize(s) {
+      return String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+        .replace(/[^a-z0-9]+/g, " ").trim();
+    }
+
+    // "One Piece - Tome 12", "Kingdom T.12" and "Berserk 41" all give the volume number
+    function guessVolume(text) {
+      const t = normalize(text);
+      let m = t.match(/\b(?:tome|volume|vol|t|n|no|numero)\s*0*(\d{1,3})\b/);
+      if (!m) m = t.match(/\b0*(\d{1,3})$/);
+      return m ? parseInt(m[1], 10) : null;
+    }
+
+    // The existing series whose name appears in the title (the longest name wins)
+    function guessSeries(text) {
+      const t = " " + normalize(text) + " ";
+      let best = null, bestLen = 0;
+      data.forEach(s => {
+        const n = normalize(s.title);
+        if (n && t.includes(" " + n + " ") && n.length > bestLen) { best = s; bestLen = n.length; }
+      });
+      return best;
+    }
+
+    // For a series you don't have yet: the title without its volume part
+    function cleanSeriesName(title) {
+      const cleaned = title
+        .replace(/[\s,:\-–(]*\b(?:tome|vol(?:ume)?\.?|t\.?|n°?)\s*0*\d+\b.*$/i, "")
+        .replace(/[\s,:\-–]*\b0*\d{1,3}\s*$/, "")
+        .trim();
+      return cleaned || title.trim();
+    }
+
+    function findByIsbn(isbn) {
+      for (const s of data) {
+        if (s.isbns && s.isbns[isbn]) return { series: s, vol: s.isbns[isbn] };
+      }
+      return null;
+    }
+
+    async function fetchJson(url, ms = 6000) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), ms);
+      try {
+        const r = await fetch(url, { signal: ctl.signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Google Books first, Open Library as a backup. Returns { title } or null.
+    async function lookupIsbn(isbn) {
+      try {
+        const j = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&maxResults=5`);
+        const item = (j.items || []).find(it =>
+          (it.volumeInfo && it.volumeInfo.industryIdentifiers || []).some(i => i.identifier === isbn));
+        if (item && item.volumeInfo.title) {
+          const v = item.volumeInfo;
+          return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title };
+        }
+      } catch { /* try the next source */ }
+      try {
+        const j = await fetchJson(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`);
+        const v = j["ISBN:" + isbn];
+        if (v && v.title) return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title };
+      } catch { /* nothing found */ }
+      return null;
+    }
+
+    const seriesSelect = document.getElementById("scan-series");
+    const newNameInput = document.getElementById("scan-newname");
+    const volumeInput = document.getElementById("scan-volume");
+
+    function showConfirm({ series, newName, vol }) {
+      seriesSelect.replaceChildren();
+      const placeholder = new Option("Choose a series…", "");
+      placeholder.disabled = true;
+      seriesSelect.append(placeholder);
+      [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
+        const o = new Option(s.title, String(data.indexOf(s)));
+        o.dataset.title = s.title;
+        seriesSelect.append(o);
+      });
+      seriesSelect.append(new Option("New series…", "new"));
+
+      if (series) seriesSelect.value = String(data.indexOf(series));
+      else if (newName) seriesSelect.value = "new";
+      else seriesSelect.value = "";
+      newNameInput.value = newName || "";
+      newNameInput.hidden = seriesSelect.value !== "new";
+      volumeInput.value = vol ? String(vol) : "";
+      document.getElementById("scan-confirm").hidden = false;
+    }
+
+    seriesSelect.onchange = () => {
+      newNameInput.hidden = seriesSelect.value !== "new";
+      if (!newNameInput.hidden) newNameInput.focus();
+    };
+
+    async function onScanned(isbn) {
+      stopScanner();
+      if (navigator.vibrate) navigator.vibrate(80);
+      currentIsbn = isbn;
+      const seq = ++scanSeq;
+      document.getElementById("scan-result").textContent = isbn;
+      document.getElementById("scan-again").hidden = false;
+      document.getElementById("scan-confirm").hidden = true;
+      scanVideo.hidden = true;
+
+      const known = findByIsbn(isbn);
+      if (known) {
+        const { series, vol } = known;
+        if (series.owned[vol - 1]) {
+          setScanStatus(`Already on your shelf: ${series.title}, volume ${vol}.`);
+        } else {
+          setScanStatus(`You scanned this one before: ${series.title}, volume ${vol}.`);
+          showConfirm({ series, vol });
+        }
+        return;
+      }
+
+      setScanStatus("Looking it up…");
+      const info = await lookupIsbn(isbn);
+      if (seq !== scanSeq || !scanner.open) return; // closed or scanned something else meanwhile
+
+      if (!info) {
+        setScanStatus("Couldn't find this book online. Choose the series and volume yourself.");
+        showConfirm({ series: null, newName: "", vol: null });
+        return;
+      }
+      const series = guessSeries(info.title);
+      setScanStatus(`Found: ${info.title}`);
+      showConfirm({
+        series,
+        newName: series ? "" : cleanSeriesName(info.title),
+        vol: guessVolume(info.title)
+      });
+    }
+
+    document.getElementById("scan-confirm").onsubmit = e => {
+      e.preventDefault();
+      if (!currentIsbn) return;
+
+      const vol = parseInt(volumeInput.value, 10);
+      let s;
+      if (seriesSelect.value === "") {
+        setScanStatus("Choose a series, or pick New series.");
+        seriesSelect.focus();
+        return;
+      }
+      if (!(vol >= 1 && vol <= 999)) {
+        setScanStatus("Enter a volume number between 1 and 999.");
+        volumeInput.focus();
+        return;
+      }
+      if (seriesSelect.value === "new") {
+        const name = newNameInput.value.trim();
+        if (!name) {
+          setScanStatus("Enter the series name.");
+          newNameInput.focus();
+          return;
+        }
+        s = data.find(x => normalize(x.title) === normalize(name));
+        if (!s) { s = { title: name, owned: [], read: [], isbns: {} }; data.push(s); }
+      } else {
+        s = data[Number(seriesSelect.value)];
+        if (!s || s.title !== seriesSelect.selectedOptions[0].dataset.title) {
+          setScanStatus("Your collection changed while you were scanning. Scan the book again.");
+          document.getElementById("scan-confirm").hidden = true;
+          return;
+        }
+      }
+
+      while (s.owned.length < vol) { s.owned.push(false); s.read.push(false); }
+      s.owned[vol - 1] = true;
+      data.forEach(x => { if (x.isbns) delete x.isbns[currentIsbn]; }); // an ISBN belongs to one volume only
+      s.isbns = s.isbns || {};
+      s.isbns[currentIsbn] = vol;
+      save();
+
+      document.getElementById("scan-saved").textContent = `Added: ${s.title}, volume ${vol}`;
+      startScanner(); // ready for the next book
+    };
 
     showAuth();
     render();
