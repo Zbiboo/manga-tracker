@@ -149,6 +149,17 @@
     }
     .modes button.active { background: var(--ink); color: var(--paper); }
 
+    /* Barcode scanner dialog */
+    dialog {
+      border: 1px solid var(--line); border-radius: 16px;
+      background: var(--surface); color: var(--ink);
+      padding: 16px; width: min(92vw, 420px);
+    }
+    dialog::backdrop { background: rgba(14, 15, 31, 0.6); }
+    dialog h2 { margin: 0 0 12px; font-size: 1.25rem; font-weight: 900; }
+    #scan-video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; background: #000; }
+    .scan-result { font-size: 1.5rem; font-weight: 900; margin: 8px 0; min-height: 1.5em; font-variant-numeric: tabular-nums; }
+
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; }
     }
@@ -190,6 +201,7 @@
 
     <div class="controls">
       <input id="search" type="search" placeholder="Search a series">
+      <button id="scan-open" class="btn" type="button">Scan a barcode</button>
       <label class="filter-row"><input type="checkbox" id="filter"> Only series with unread volumes</label>
     </div>
 
@@ -201,6 +213,17 @@
     <button type="button" data-mode="reading">Reading</button>
     <button type="button" data-mode="missing">Missing</button>
   </nav>
+
+  <dialog id="scanner">
+    <h2>Scan a barcode</h2>
+    <video id="scan-video" playsinline muted></video>
+    <p id="scan-status" class="muted">Point the camera at the barcode on the back cover.</p>
+    <p id="scan-result" class="scan-result"></p>
+    <div class="row">
+      <button id="scan-again" class="btn" type="button" hidden>Scan another</button>
+      <button id="scan-close" class="btn primary" type="button">Close</button>
+    </div>
+  </dialog>
 
   <script>
     const SUPABASE_URL = "https://cjhnonzpofziwoyinihp.supabase.co";
@@ -518,6 +541,103 @@
       if (!user) setSyncStatus("");
       if (user && (event === "INITIAL_SESSION" || event === "SIGNED_IN")) setTimeout(pull, 0);
     });
+
+    /* ---------- Barcode scanner (step 1: read and show the ISBN) ---------- */
+
+    // An ISBN-13 starts with 978 or 979 and ends with a check digit.
+    // Checking it ignores other barcodes and misreads, and scanning carries on.
+    function isValidIsbn13(code) {
+      if (!/^97[89]\d{10}$/.test(code)) return false;
+      let sum = 0;
+      for (let i = 0; i < 12; i++) sum += Number(code[i]) * (i % 2 === 0 ? 1 : 3);
+      return (10 - (sum % 10)) % 10 === Number(code[12]);
+    }
+
+    const scanner = document.getElementById("scanner");
+    const scanVideo = document.getElementById("scan-video");
+    let scanStream = null;
+    let scanLoop = null;
+
+    function setScanStatus(msg) {
+      document.getElementById("scan-status").textContent = msg;
+    }
+
+    function stopScanner() {
+      clearTimeout(scanLoop);
+      if (scanStream) {
+        scanStream.getTracks().forEach(t => t.stop());
+        scanStream = null;
+      }
+      scanVideo.srcObject = null;
+    }
+
+    async function startScanner() {
+      document.getElementById("scan-result").textContent = "";
+      document.getElementById("scan-again").hidden = true;
+
+      if (!("BarcodeDetector" in window)) {
+        setScanStatus("This browser can't read barcodes. Try Chrome on your Android phone.");
+        return;
+      }
+
+      let detector;
+      try {
+        detector = new BarcodeDetector({ formats: ["ean_13"] });
+      } catch {
+        setScanStatus("This browser can't read this type of barcode.");
+        return;
+      }
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false
+        });
+      } catch {
+        setScanStatus("Camera access is blocked. Allow the camera for this site in your browser settings, then try again.");
+        return;
+      }
+
+      if (!scanner.open) { // the dialog was closed while waiting for the camera
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      scanStream = stream;
+      scanVideo.srcObject = stream;
+      try {
+        await scanVideo.play();
+      } catch {
+        return; // interrupted, for example because the dialog was closed
+      }
+      if (!scanStream) return;
+      setScanStatus("Point the camera at the barcode on the back cover.");
+
+      const tick = async () => {
+        if (!scanStream) return;
+        try {
+          const codes = await detector.detect(scanVideo);
+          const isbn = codes.map(c => c.rawValue).find(isValidIsbn13);
+          if (isbn) { onScanned(isbn); return; }
+        } catch {}
+        scanLoop = setTimeout(tick, 250);
+      };
+      tick();
+    }
+
+    function onScanned(isbn) {
+      stopScanner();
+      if (navigator.vibrate) navigator.vibrate(80);
+      document.getElementById("scan-result").textContent = isbn;
+      setScanStatus("ISBN found.");
+      document.getElementById("scan-again").hidden = false;
+    }
+
+    document.getElementById("scan-open").onclick = () => { scanner.showModal(); startScanner(); };
+    document.getElementById("scan-again").onclick = startScanner;
+    document.getElementById("scan-close").onclick = () => scanner.close();
+    scanner.addEventListener("close", stopScanner);
 
     showAuth();
     render();
