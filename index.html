@@ -695,7 +695,7 @@
     function cleanSeriesName(title) {
       const cleaned = title
         .replace(/[\s,:\-–(]*\b(?:tome|vol(?:ume)?\.?|t\.?|n°?)\s*0*\d+\b.*$/i, "")
-        .replace(/[\s,:\-–]*\b0*\d{1,3}\s*$/, "")
+        .replace(/[\s,.:\-–]*\b0*\d{1,3}\s*$/, "")
         .trim();
       return cleaned || title.trim();
     }
@@ -707,35 +707,89 @@
       return null;
     }
 
-    async function fetchJson(url, ms = 6000) {
+    const digits = s => String(s).replace(/\D/g, "");
+
+    async function fetchBody(url, kind, ms = 5000) {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), ms);
       try {
         const r = await fetch(url, { signal: ctl.signal });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return await r.json();
+        if (r.redirected) throw new Error("unexpected"); // we got some other page, not our answer
+        return kind === "json" ? await r.json() : await r.text();
       } finally {
         clearTimeout(timer);
       }
     }
 
-    // Google Books first, Open Library as a backup. Returns { title } or null.
-    async function lookupIsbn(isbn) {
-      try {
-        const j = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&maxResults=5`);
-        const item = (j.items || []).find(it =>
-          (it.volumeInfo && it.volumeInfo.industryIdentifiers || []).some(i => i.identifier === isbn));
-        if (item && item.volumeInfo.title) {
+    // Short reason shown when a source gives nothing, so a failure is easy to understand
+    function describeError(err) {
+      if (err && err.name === "AbortError") return "timed out";
+      if (err && err.message === "unexpected") return "unexpected answer";
+      const m = err && /^HTTP (\d+)/.exec(err.message || "");
+      if (m) return `error ${m[1]}`;
+      return "unreachable";
+    }
+
+    // Each source returns { title } or null. They are asked one after the other, and
+    // only when the previous one found nothing, so your ISBN goes to as few as possible.
+    const SOURCES = [
+      {
+        name: "Google Books",
+        async run(isbn) {
+          const j = await fetchBody(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&maxResults=5`, "json");
+          const items = (j.items || []).filter(it => it.volumeInfo && it.volumeInfo.title);
+          const exact = items.find(it =>
+            (it.volumeInfo.industryIdentifiers || []).some(i => digits(i.identifier) === isbn));
+          const item = exact || items[0];
+          if (!item) return null;
           const v = item.volumeInfo;
+          return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title, unverified: !exact };
+        }
+      },
+      {
+        // The French national library: complete for French editions
+        name: "BnF",
+        async run(isbn) {
+          const q = encodeURIComponent(`bib.isbn all "${isbn}"`);
+          const xml = await fetchBody(
+            `https://catalogue.bnf.fr/api/SRU?version=1.2&operation=searchRetrieve&query=${q}&recordSchema=dublincore&maximumRecords=1`,
+            "text");
+          const doc = new DOMParser().parseFromString(xml, "application/xml");
+          if (doc.getElementsByTagName("parsererror").length) throw new Error("unexpected");
+          const titles = doc.getElementsByTagNameNS("*", "title");
+          if (!titles.length) return null; // no record for this ISBN
+          const ids = [...doc.getElementsByTagNameNS("*", "identifier")].map(n => digits(n.textContent));
+          if (!ids.some(d => d.includes(isbn))) throw new Error("unexpected"); // a record, but not for this ISBN
+          // "Du mouvement de la Terre. 1 [Texte imprimé] / Uoto ; ..." becomes "Du mouvement de la Terre. 1"
+          const title = titles[0].textContent.replace(/\s*\[[^\]]*\]/g, "").split(" / ")[0].trim();
+          return title ? { title } : null;
+        }
+      },
+      {
+        name: "Open Library",
+        async run(isbn) {
+          const j = await fetchBody(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`, "json");
+          const v = j["ISBN:" + isbn];
+          if (!v || !v.title) return null;
           return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title };
         }
-      } catch { /* try the next source */ }
-      try {
-        const j = await fetchJson(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`);
-        const v = j["ISBN:" + isbn];
-        if (v && v.title) return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title };
-      } catch { /* nothing found */ }
-      return null;
+      }
+    ];
+
+    // Returns { info: { title, source, unverified? } | null, trail: ["Google Books: no match", ...] }
+    async function lookupIsbn(isbn) {
+      const trail = [];
+      for (const src of SOURCES) {
+        try {
+          const hit = await src.run(isbn);
+          if (hit) return { info: { ...hit, source: src.name }, trail };
+          trail.push(`${src.name}: no match`);
+        } catch (err) {
+          trail.push(`${src.name}: ${describeError(err)}`);
+        }
+      }
+      return { info: null, trail };
     }
 
     const seriesSelect = document.getElementById("scan-series");
@@ -791,16 +845,16 @@
       }
 
       setScanStatus("Looking it up…");
-      const info = await lookupIsbn(isbn);
+      const { info, trail } = await lookupIsbn(isbn);
       if (seq !== scanSeq || !scanner.open) return; // closed or scanned something else meanwhile
 
       if (!info) {
-        setScanStatus("Couldn't find this book online. Choose the series and volume yourself.");
+        setScanStatus(`Couldn't find this book online (${trail.join("; ")}). Choose the series and volume yourself.`);
         showConfirm({ series: null, newName: "", vol: null });
         return;
       }
       const series = guessSeries(info.title);
-      setScanStatus(`Found: ${info.title}`);
+      setScanStatus(`Found: ${info.title} (${info.source}${info.unverified ? ", not fully verified" : ""})`);
       showConfirm({
         series,
         newName: series ? "" : cleanSeriesName(info.title),
