@@ -134,6 +134,25 @@
 
     .empty { color: var(--muted); text-align: center; padding: 40px 16px; margin: 0; }
 
+    /* Collapsible series: the header row stays visible, the volumes open on tap */
+    details.series > summary {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
+      min-height: 44px; cursor: pointer; list-style: none;
+    }
+    details.series > summary::-webkit-details-marker { display: none; }
+    details.series[open] > summary { margin-bottom: 14px; }
+    details.series > summary .series-title { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+    .chev { width: 18px; text-align: center; color: var(--muted); }
+    .chev::after { content: "+"; }
+    details.series[open] > summary .chev::after { content: "\2013"; }
+    .progress { flex: 0 0 100%; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--line); overflow: hidden; }
+    .progress .fill { display: block; height: 100%; border-radius: 3px; background: var(--own-bg); }
+    body[data-mode="reading"] .progress .fill { background: var(--read-bg); }
+    .control-row { display: flex; gap: 8px; }
+    .control-row .btn { flex: 1; padding: 0 10px; white-space: nowrap; }
+    body[data-mode="missing"] #toggle-all { display: none; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+
     /* Bottom navigation, within thumb reach */
     .modes {
       position: fixed; left: 50%; transform: translateX(-50%);
@@ -148,6 +167,9 @@
       font: inherit; font-weight: 700; cursor: pointer;
     }
     .modes button.active { background: var(--ink); color: var(--paper); }
+    @media (max-width: 380px) {
+      .modes button { padding: 0 12px; font-size: 0.95rem; }
+    }
 
     /* Barcode scanner dialog */
     dialog {
@@ -180,6 +202,7 @@
     <header>
       <h1>My manga collection</h1>
       <p id="total"></p>
+      <p id="summary" class="muted"></p>
       <p id="sync-status" class="muted"></p>
     </header>
 
@@ -211,7 +234,10 @@
 
     <div class="controls">
       <input id="search" type="search" placeholder="Search a series">
-      <button id="scan-open" class="btn" type="button">Scan a barcode</button>
+      <div class="control-row">
+        <button id="scan-open" class="btn" type="button">Scan a barcode</button>
+        <button id="toggle-all" class="btn" type="button">Expand all</button>
+      </div>
       <label class="filter-row"><input type="checkbox" id="filter"> Only series with unread volumes</label>
     </div>
 
@@ -256,6 +282,14 @@
     let user = null;
     let pushTimer = null;
 
+    // Which series are open. Kept on this device only (a convenience, not part of your collection).
+    let openSeries = new Set();
+    try { openSeries = new Set(JSON.parse(localStorage.getItem("manga_open") || "[]")); } catch {}
+    function saveOpen() {
+      try { localStorage.setItem("manga_open", JSON.stringify([...openSeries])); } catch {}
+    }
+    let shownTitles = []; // the series currently listed, for Expand all / Collapse all
+
     // Older entries had no "owned" list: treat all their volumes as owned
     data.forEach(s => { if (!s.owned) s.owned = s.read.map(() => true); });
 
@@ -292,6 +326,32 @@
 
     const EMPTY_TEXT = "No series yet. Open Account and tools, under the title, to add your first one.";
 
+    // One line about the whole collection, whatever the view or the search
+    function updateSummary() {
+      const line = document.getElementById("summary");
+      if (!data.length) { line.textContent = ""; return; }
+      let total = 0, owned = 0, toRead = 0;
+      data.forEach(s => {
+        total += s.owned.length;
+        s.owned.forEach((o, v) => { if (o) { owned++; if (!s.read[v]) toRead++; } });
+      });
+      line.textContent = `${data.length} series, ${owned} of ${total} volumes owned, ${toRead} to read`;
+    }
+
+    function updateToggleAll() {
+      const b = document.getElementById("toggle-all");
+      const allOpen = shownTitles.length > 0 && shownTitles.every(t => openSeries.has(t));
+      b.textContent = allOpen ? "Collapse all" : "Expand all";
+      b.disabled = shownTitles.length === 0;
+    }
+
+    document.getElementById("toggle-all").onclick = () => {
+      const allOpen = shownTitles.every(t => openSeries.has(t));
+      shownTitles.forEach(t => { if (allOpen) openSeries.delete(t); else openSeries.add(t); });
+      saveOpen();
+      render();
+    };
+
     /* ---------- Saving ---------- */
 
     function save() {
@@ -309,6 +369,7 @@
         b.classList.toggle("active", b.dataset.mode === mode);
       });
 
+      updateSummary();
       if (mode === "missing") { renderMissing(); return; }
 
       const list = document.getElementById("list");
@@ -316,6 +377,7 @@
       const query = document.getElementById("search").value.trim().toLowerCase();
       const field = mode === "inventory" ? "owned" : "read";
       list.replaceChildren();
+      shownTitles = [];
       let ownedTotal = 0, unreadTotal = 0;
 
       [...data].sort((a, b) => a.title.localeCompare(b.title)).forEach(s => {
@@ -326,14 +388,35 @@
         if (mode === "reading" && onlyUnread && left === 0) return;
         if (query && !s.title.toLowerCase().includes(query)) return;
 
-        const card = el("section", "series");
+        shownTitles.push(s.title);
+        const card = el("details", "series");
+        card.open = openSeries.has(s.title);
+        card.addEventListener("toggle", () => {
+          if (card.open === openSeries.has(s.title)) return; // we just set it ourselves
+          if (card.open) openSeries.add(s.title); else openSeries.delete(s.title);
+          saveOpen();
+          updateToggleAll();
+        });
 
-        const head = el("div", "series-head");
+        // The bar shows owned volumes in Inventory, and read volumes among the owned ones in Reading
+        const readOwned = s.owned.filter((o, v) => o && s.read[v]).length;
+        const fraction = mode === "inventory"
+          ? (s.owned.length ? ownedCount / s.owned.length : 0)
+          : (ownedCount ? readOwned / ownedCount : 0);
+        const fill = el("span", "fill");
+        fill.style.width = `${Math.round(fraction * 100)}%`;
+        const bar = el("span", "progress");
+        bar.setAttribute("aria-hidden", "true");
+        bar.append(fill);
+
+        const head = el("summary", "series-summary");
         head.append(
           el("h2", "series-title", s.title),
           el("span", "series-count", mode === "inventory"
             ? `${ownedCount} of ${s.owned.length} owned`
-            : `${left} unread`)
+            : `${left} unread`),
+          el("span", "chev"),
+          bar
         );
         card.append(head);
 
@@ -350,6 +433,11 @@
           grid.append(tile);
         });
         card.append(grid);
+        if (!grid.children.length) {
+          grid.append(el("p", "muted", mode === "reading"
+            ? "None of these volumes are on your shelf yet. Tick them in Inventory first."
+            : "No volumes."));
+        }
 
         const more = el("details", "more");
         more.append(el("summary", "", "Options"));
@@ -374,7 +462,12 @@
             save();
           }),
           btn("Delete series", () => {
-            if (confirm(`Delete ${s.title}?`)) { data.splice(data.indexOf(s), 1); save(); }
+            if (confirm(`Delete ${s.title}?`)) {
+              data.splice(data.indexOf(s), 1);
+              openSeries.delete(s.title);
+              saveOpen();
+              save();
+            }
           }, "danger")
         );
         more.append(tools);
@@ -390,6 +483,7 @@
       if (!list.children.length) {
         list.append(el("p", "empty", data.length ? "No series match your search or filter." : EMPTY_TEXT));
       }
+      updateToggleAll();
     }
 
     function renderMissing() {
@@ -432,6 +526,8 @@
       const title = document.getElementById("title").value.trim();
       const count = parseInt(document.getElementById("count").value);
       data.push({ title, owned: Array(count).fill(false), read: Array(count).fill(false) });
+      openSeries.add(title); // a new series opens, ready for ticking
+      saveOpen();
       e.target.reset();
       save();
     };
@@ -901,6 +997,8 @@
       data.forEach(x => { if (x.isbns) delete x.isbns[currentIsbn]; }); // an ISBN belongs to one volume only
       s.isbns = s.isbns || {};
       s.isbns[currentIsbn] = vol;
+      openSeries.add(s.title); // the series you just scanned into stays open behind the scanner
+      saveOpen();
       save();
 
       document.getElementById("scan-saved").textContent = `Added: ${s.title}, volume ${vol}`;
