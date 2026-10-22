@@ -480,6 +480,12 @@
             for (let k = 0; k < n; k++) { s.owned.push(false); s.read.push(false); }
             save();
           }),
+          safeCover(s.cover)
+            ? btn("Remove cover", () => { delete s.cover; s.noCover = true; save(); })
+            : btn("Find cover", async () => {
+                delete s.noCover;
+                if (!(await autoCover(s))) alert("No cover found for this series.");
+              }),
           btn("Delete series", () => {
             if (confirm(`Delete ${s.title}?`)) {
               data.splice(data.indexOf(s), 1);
@@ -544,11 +550,13 @@
       e.preventDefault();
       const title = document.getElementById("title").value.trim();
       const count = parseInt(document.getElementById("count").value);
-      data.push({ title, owned: Array(count).fill(false), read: Array(count).fill(false) });
+      const added = { title, owned: Array(count).fill(false), read: Array(count).fill(false) };
+      data.push(added);
       openSeries.add(title); // a new series opens, ready for ticking
       saveOpen();
       e.target.reset();
       save();
+      autoCover(added);
     };
 
     document.getElementById("export").onclick = () => {
@@ -949,6 +957,69 @@
       });
     }
 
+    // A book title counts as "this series" when it is the series name, optionally followed by a volume marker
+    // ("Kingdom", "Kingdom 3", "Kingdom, Tome 12", "Kingdom Vol. 1"). Returns the volume number (0 if none) or null.
+    function volumeOf(bookTitle, seriesTitle) {
+      const b = normalize(bookTitle), n = normalize(seriesTitle);
+      if (!n || !(b === n || b.startsWith(n + " "))) return null;
+      const rest = b.slice(n.length).trim();
+      if (!rest) return 0;
+      const m = /^(?:(?:tome|vol|volume|t|n|no|book|livre|part)\s*)?(\d{1,3})(?:\s|$)/.exec(rest);
+      return m ? parseInt(m[1], 10) : null;
+    }
+
+    // Looks for a cover by series name: first Google Books, then Open Library.
+    // Only books whose title is the series name plus a volume number are accepted, and volume 1 is preferred.
+    async function findCoverByTitle(title) {
+      const pick = cands => {
+        const ok = cands.filter(c => c.url && c.vol !== null);
+        ok.sort((a, b) => (a.vol === 1 ? 0 : a.vol === 0 ? 1 : 2) - (b.vol === 1 ? 0 : b.vol === 0 ? 1 : 2) || a.vol - b.vol);
+        return ok.length ? ok[0].url : null;
+      };
+      try {
+        const q = encodeURIComponent(`intitle:"${title}"`);
+        const j = await fetchBody(`https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=20&printType=books`, "json");
+        const url = pick((j.items || []).map(it => {
+          const v = it.volumeInfo || {};
+          return { vol: v.title ? volumeOf(v.title, title) : null,
+                   url: safeCover(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail)) };
+        }));
+        if (url) return url;
+      } catch { /* try the next one */ }
+      try {
+        const q = encodeURIComponent(title);
+        const j = await fetchBody(`https://openlibrary.org/search.json?title=${q}&limit=20&fields=title,cover_i`, "json");
+        const url = pick((j.docs || []).map(d => ({
+          vol: d.title ? volumeOf(d.title, title) : null,
+          url: Number.isInteger(d.cover_i) ? safeCover(`https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg`) : null
+        })));
+        if (url) return url;
+      } catch { /* nothing more to try */ }
+      return null;
+    }
+
+    // Best cover for a series: its barcodes first (exact), then its name
+    async function findSeriesCover(s) {
+      const isbns = Object.entries(s.isbns || {}).sort((a, b) => a[1] - b[1]).slice(0, 2);
+      for (const [isbn] of isbns) {
+        const url = await findCover(isbn);
+        if (url) return url;
+      }
+      return findCoverByTitle(s.title);
+    }
+
+    // Runs in the background for a new series; never overwrites a cover that appeared meanwhile
+    const coverSearches = new Set();
+    async function autoCover(s) {
+      if (safeCover(s.cover) || s.noCover || coverSearches.has(s)) return false;
+      coverSearches.add(s);
+      try {
+        const url = await findSeriesCover(s);
+        if (url && data.includes(s) && !safeCover(s.cover) && !s.noCover) { s.cover = url; save(); return true; }
+      } finally { coverSearches.delete(s); }
+      return false;
+    }
+
     // Looks for a cover by ISBN alone, for books whose title came from a source without pictures (BnF)
     async function findCover(isbn) {
       try {
@@ -1099,6 +1170,7 @@
       saveOpen();
       save();
 
+      autoCover(s); // no cover from the barcode: try the series name
       document.getElementById("scan-saved").textContent = `Added: ${s.title}, volume ${vol}`;
       startScanner(); // ready for the next book
     };
@@ -1106,26 +1178,17 @@
     document.getElementById("find-covers").onclick = async () => {
       const status = document.getElementById("covers-status");
       const button = document.getElementById("find-covers");
-      const todo = data.filter(s => !safeCover(s.cover) && s.isbns && Object.keys(s.isbns).length);
-      if (!todo.length) {
-        status.textContent = data.some(s => !safeCover(s.cover))
-          ? "Series you added by hand have no barcode to look up. Scan one of their volumes."
-          : "Every series already has a cover.";
-        return;
-      }
+      const todo = data.filter(s => !safeCover(s.cover) && !s.noCover);
+      if (!todo.length) { status.textContent = "Every series already has a cover."; return; }
       button.disabled = true;
       let found = 0;
       for (const [i, s] of todo.entries()) {
         status.textContent = `Looking up covers… ${i + 1} of ${todo.length}`;
-        // Prefer volume 1, otherwise the lowest volume we have a barcode for
-        const isbns = Object.entries(s.isbns).sort((a, b) => a[1] - b[1]);
-        for (const [isbn] of isbns.slice(0, 2)) {
-          const url = await findCover(isbn);
-          if (url) { s.cover = url; found++; break; }
-        }
+        const url = await findSeriesCover(s);
+        if (url && data.includes(s) && !safeCover(s.cover)) { s.cover = url; found++; }
       }
       button.disabled = false;
-      status.textContent = `Found ${found} of ${todo.length}. The rest have no cover online.`;
+      status.textContent = `Found ${found} of ${todo.length}. Use Options > Remove cover on any that looks wrong.`;
       if (found) save();
     };
 
