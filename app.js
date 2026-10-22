@@ -903,3 +903,7 @@ document.getElementById("find-covers").onclick = async () => {
 
 showAuth();
 render();
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}

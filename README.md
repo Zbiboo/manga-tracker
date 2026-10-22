@@ -16,6 +16,12 @@ Live at **https://zbiboo.github.io/manga-tracker/**
 
 Your data is always saved in the browser (`localStorage`), so the app works without logging in.
 
+## Installing on your phone
+
+On Android, open the site in Chrome, tap the ⋮ menu, then **Add to Home screen** → **Install**. The app gets its own icon and opens full screen, without the browser bar. After the first launch it also opens without a connection. Syncing, lookups and covers still need internet.
+
+On iPhone, open the site in Safari and tap Share → **Add to Home Screen**.
+
 ## Files
 
 | File         | Contents                                   |
@@ -23,6 +29,9 @@ Your data is always saved in the browser (`localStorage`), so the app works with
 | `index.html` | Page layout                                |
 | `styles.css` | Styles, light and dark themes              |
 | `app.js`     | App logic: rendering, sync, scanner, lookups, covers |
+| `manifest.webmanifest` | App name, colours and icons, used when installing |
+| `sw.js`      | Service worker: caches the app files so it opens offline |
+| `icons/`     | App icon (`icon.svg` is the source; the PNGs are exported from it) |
 
 There's no build step and no dependencies to install. Supabase's JS client and the Google font load from CDNs.
 
