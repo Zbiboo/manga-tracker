@@ -136,16 +136,28 @@
 
     /* Collapsible series: the header row stays visible, the volumes open on tap */
     details.series > summary {
-      display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
+      display: flex; align-items: center; gap: 12px;
       min-height: 44px; cursor: pointer; list-style: none;
     }
+    .series-main { flex: 1 1 0; min-width: 0; }
+    .series-top { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 12px; }
+    .series-top .series-title { grid-area: 1 / 1; }
+    .series-top .chev { grid-area: 1 / 2; }
+    .series-top .series-count { grid-area: 2 / 1 / 3 / 3; }
+    .cover {
+      flex: 0 0 44px; width: 44px; height: 64px; border-radius: 6px; overflow: hidden;
+      background: var(--line); display: flex; align-items: center; justify-content: center;
+      font-weight: 900; font-size: 1.4rem; color: #fff;
+    }
+    .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
     details.series > summary::-webkit-details-marker { display: none; }
     details.series[open] > summary { margin-bottom: 14px; }
     details.series > summary .series-title { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+
     .chev { width: 18px; text-align: center; color: var(--muted); }
     .chev::after { content: "+"; }
     details.series[open] > summary .chev::after { content: "\2013"; }
-    .progress { flex: 0 0 100%; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--line); overflow: hidden; }
+    .progress { display: block; width: 100%; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--line); overflow: hidden; }
     .progress .fill { display: block; height: 100%; border-radius: 3px; background: var(--own-bg); }
     body[data-mode="reading"] .progress .fill { background: var(--read-bg); }
     .control-row { display: flex; gap: 8px; }
@@ -229,6 +241,10 @@
           <button id="import" class="btn" type="button">Import backup</button>
           <input type="file" id="import-file" accept=".json" hidden>
         </div>
+        <div class="row">
+          <button id="find-covers" class="btn" type="button">Find missing covers</button>
+        </div>
+        <p id="covers-status" class="muted" role="status"></p>
       </div>
     </details>
 
@@ -410,14 +426,17 @@
         bar.append(fill);
 
         const head = el("summary", "series-summary");
-        head.append(
+        const top = el("div", "series-top");
+        top.append(
           el("h2", "series-title", s.title),
           el("span", "series-count", mode === "inventory"
             ? `${ownedCount} of ${s.owned.length} owned`
             : `${left} unread`),
-          el("span", "chev"),
-          bar
+          el("span", "chev")
         );
+        const main = el("div", "series-main");
+        main.append(top, bar);
+        head.append(coverFor(s), main);
         card.append(head);
 
         const grid = el("div", "volumes");
@@ -676,6 +695,7 @@
     let scanLoop = null;
     let scanSeq = 0;        // bumps on every new scan or close, so late lookups can be ignored
     let currentIsbn = null;
+    let currentCover = null;
 
     function setScanStatus(msg) {
       document.getElementById("scan-status").textContent = msg;
@@ -693,6 +713,7 @@
     async function startScanner() {
       scanSeq++;
       currentIsbn = null;
+      currentCover = null;
       scanVideo.hidden = true;
       document.getElementById("scan-result").textContent = "";
       document.getElementById("scan-again").hidden = true;
@@ -840,7 +861,8 @@
           const item = exact || items[0];
           if (!item) return null;
           const v = item.volumeInfo;
-          return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title, unverified: !exact };
+          return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title, unverified: !exact,
+                   cover: exact ? safeCover(v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail)) : null };
         }
       },
       {
@@ -868,10 +890,78 @@
           const j = await fetchBody(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`, "json");
           const v = j["ISBN:" + isbn];
           if (!v || !v.title) return null;
-          return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title };
+          return { title: v.subtitle ? `${v.title} ${v.subtitle}` : v.title,
+                   cover: safeCover(v.cover && (v.cover.medium || v.cover.large || v.cover.small)) };
         }
       }
     ];
+
+    /* ---------- Covers ---------- */
+
+    // Only covers from these hosts are ever shown, whatever a backup or the cloud copy says.
+    const COVER_HOSTS = ["books.google.com", "books.googleusercontent.com", "covers.openlibrary.org"];
+
+    function safeCover(url) {
+      if (typeof url !== "string") return null;
+      try {
+        const u = new URL(url.replace(/^http:\/\//, "https://"));
+        if (u.protocol !== "https:" || !COVER_HOSTS.includes(u.hostname)) return null;
+        u.searchParams.delete("edge"); // Google's page-curl effect
+        return u.href;
+      } catch { return null; }
+    }
+
+    function colorFor(title) {
+      let h = 0;
+      for (const ch of title) h = (h * 31 + ch.codePointAt(0)) % 360;
+      return `hsl(${h} 45% 38%)`;
+    }
+
+    function coverFor(s) {
+      const box = el("span", "cover");
+      box.setAttribute("aria-hidden", "true");
+      const fallback = () => {
+        box.replaceChildren(document.createTextNode((s.title.trim()[0] || "?").toUpperCase()));
+        box.style.background = colorFor(s.title);
+      };
+      const url = safeCover(s.cover);
+      if (!url) { fallback(); return box; }
+      const img = document.createElement("img");
+      img.alt = "";
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      img.onerror = fallback;
+      img.onload = () => { if (img.naturalWidth < 10) fallback(); }; // some services answer with a 1px "no cover" image
+      img.src = url;
+      box.append(img);
+      return box;
+    }
+
+    // Does this image address really hold a picture? (Open Library answers 404 with default=false)
+    function probeImage(url) {
+      return new Promise(resolve => {
+        const img = new Image();
+        const timer = setTimeout(() => { img.src = ""; resolve(false); }, 5000);
+        img.onload = () => { clearTimeout(timer); resolve(img.naturalWidth >= 10); };
+        img.onerror = () => { clearTimeout(timer); resolve(false); };
+        img.referrerPolicy = "no-referrer";
+        img.src = url;
+      });
+    }
+
+    // Looks for a cover by ISBN alone, for books whose title came from a source without pictures (BnF)
+    async function findCover(isbn) {
+      try {
+        const j = await fetchBody(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&maxResults=5`, "json");
+        const item = (j.items || []).find(it => (it.volumeInfo && it.volumeInfo.industryIdentifiers || [])
+          .some(i => digits(i.identifier) === isbn));
+        const url = item && safeCover(item.volumeInfo.imageLinks &&
+          (item.volumeInfo.imageLinks.thumbnail || item.volumeInfo.imageLinks.smallThumbnail));
+        if (url) return url;
+      } catch { /* try the next one */ }
+      const ol = `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=false`;
+      return (await probeImage(ol)) ? ol : null;
+    }
 
     // Returns { info: { title, source, unverified? } | null, trail: ["Google Books: no match", ...] }
     async function lookupIsbn(isbn) {
@@ -922,6 +1012,7 @@
       stopScanner();
       if (navigator.vibrate) navigator.vibrate(80);
       currentIsbn = isbn;
+      currentCover = null;
       const seq = ++scanSeq;
       document.getElementById("scan-result").textContent = isbn;
       document.getElementById("scan-again").hidden = false;
@@ -948,6 +1039,12 @@
         setScanStatus(`Couldn't find this book online (${trail.join("; ")}). Choose the series and volume yourself.`);
         showConfirm({ series: null, newName: "", vol: null });
         return;
+      }
+      currentCover = info.cover || null;
+      if (!currentCover) {
+        setScanStatus("Looking for the cover…");
+        currentCover = await findCover(isbn);
+        if (seq !== scanSeq || !scanner.open) return;
       }
       const series = guessSeries(info.title);
       setScanStatus(`Found: ${info.title} (${info.source}${info.unverified ? ", not fully verified" : ""})`);
@@ -997,12 +1094,39 @@
       data.forEach(x => { if (x.isbns) delete x.isbns[currentIsbn]; }); // an ISBN belongs to one volume only
       s.isbns = s.isbns || {};
       s.isbns[currentIsbn] = vol;
+      if (currentCover && (!s.cover || vol === 1)) s.cover = currentCover; // volume 1 makes the best series picture
       openSeries.add(s.title); // the series you just scanned into stays open behind the scanner
       saveOpen();
       save();
 
       document.getElementById("scan-saved").textContent = `Added: ${s.title}, volume ${vol}`;
       startScanner(); // ready for the next book
+    };
+
+    document.getElementById("find-covers").onclick = async () => {
+      const status = document.getElementById("covers-status");
+      const button = document.getElementById("find-covers");
+      const todo = data.filter(s => !safeCover(s.cover) && s.isbns && Object.keys(s.isbns).length);
+      if (!todo.length) {
+        status.textContent = data.some(s => !safeCover(s.cover))
+          ? "Series you added by hand have no barcode to look up. Scan one of their volumes."
+          : "Every series already has a cover.";
+        return;
+      }
+      button.disabled = true;
+      let found = 0;
+      for (const [i, s] of todo.entries()) {
+        status.textContent = `Looking up covers… ${i + 1} of ${todo.length}`;
+        // Prefer volume 1, otherwise the lowest volume we have a barcode for
+        const isbns = Object.entries(s.isbns).sort((a, b) => a[1] - b[1]);
+        for (const [isbn] of isbns.slice(0, 2)) {
+          const url = await findCover(isbn);
+          if (url) { s.cover = url; found++; break; }
+        }
+      }
+      button.disabled = false;
+      status.textContent = `Found ${found} of ${todo.length}. The rest have no cover online.`;
+      if (found) save();
     };
 
     showAuth();
